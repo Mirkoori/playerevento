@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Event Player — Output Remoto</title>
+<script src="https://cdn.ably.com/lib/ably.min-2.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;height:100%;background:#000;overflow:hidden;font-family:-apple-system,sans-serif;}
+#idle{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#000;z-index:2;gap:1rem;}
+#idle p{font-size:13px;color:rgba(255,255,255,0.3);letter-spacing:0.12em;text-transform:uppercase;}
+#idle .code{font-size:28px;color:rgba(255,255,255,0.7);letter-spacing:0.15em;font-weight:600;}
+#idle .status{font-size:12px;color:rgba(255,255,255,0.25);}
+#idle .status.connected{color:#4caf50;}
+#setup{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#111;z-index:50;}
+#setup-box{background:#1c1c1c;border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:2rem;width:400px;max-width:90vw;}
+#setup-box h2{font-size:14px;color:rgba(255,255,255,0.6);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:1.5rem;}
+#setup-box label{display:block;font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:6px;}
+#setup-box input{width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;font-size:14px;padding:10px 12px;margin-bottom:1rem;outline:none;}
+#setup-box input:focus{border-color:rgba(255,255,255,0.35);}
+#setup-box button{width:100%;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:8px;padding:10px;font-size:13px;cursor:pointer;letter-spacing:0.04em;transition:background 0.2s;}
+#setup-box button:hover{background:rgba(255,255,255,0.2);}
+#setup-box .hint{font-size:11px;color:rgba(255,255,255,0.25);margin-top:1rem;line-height:1.5;}
+#tappo{position:fixed;inset:0;z-index:3;background:#000 center/cover no-repeat;display:none;}
+#imgel{position:fixed;inset:0;z-index:4;background:#000 center/contain no-repeat;display:none;}
+#fade{position:fixed;inset:0;background:#000;z-index:6;opacity:0;pointer-events:none;}
+video{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;display:none;z-index:4;}
+#progress-overlay{position:fixed;bottom:0;left:0;right:0;height:4px;background:rgba(255,255,255,0.08);z-index:20;display:none;}
+#progress-fill{height:100%;background:rgba(255,255,255,0.25);width:0%;}
+#xfer-status{position:fixed;top:12px;left:12px;background:rgba(0,0,0,0.6);color:rgba(255,255,255,0.6);font-size:11px;padding:6px 12px;border-radius:6px;z-index:30;display:none;letter-spacing:0.04em;}
+</style>
+</head>
+<body>
+
+<div id="setup">
+  <div id="setup-box">
+    <h2>Output Remoto — Connessione</h2>
+    <label>Codice sessione (dalla regia)</label>
+    <input type="text" id="session-input" placeholder="es. ABCD1234" autocomplete="off" autocapitalize="characters" spellcheck="false">
+    <button id="connect-btn">Connetti</button>
+    <div class="hint">Inserisci il codice mostrato nel pannello "Output Remoto" della regia. La pagina passerà automaticamente in modalità output fullscreen una volta connessa.</div>
+  </div>
+</div>
+
+<div id="idle">
+  <p>In attesa connessione</p>
+  <div class="code" id="idle-code"></div>
+  <div class="status" id="idle-status">Non connesso</div>
+</div>
+<div id="tappo"></div>
+<div id="imgel"></div>
+<div id="fade"></div>
+<video id="v" playsinline></video>
+<div id="progress-overlay"><div id="progress-fill"></div></div>
+<div id="xfer-status"></div>
+
+<script>
+const v             = document.getElementById("v");
+const idle          = document.getElementById("idle");
+const idleCode      = document.getElementById("idle-code");
+const idleStatus    = document.getElementById("idle-status");
+const tappoEl       = document.getElementById("tappo");
+const imgEl         = document.getElementById("imgel");
+const fadeEl        = document.getElementById("fade");
+const setupPanel    = document.getElementById("setup");
+const sessionInput  = document.getElementById("session-input");
+const connectBtn    = document.getElementById("connect-btn");
+const xferStatus    = document.getElementById("xfer-status");
+const progOverlay   = document.getElementById("progress-overlay");
+const progFill      = document.getElementById("progress-fill");
+
+const ABLY_KEY = "tc6Lyg.m3mshg:bZe47zDIgcR449tClIxK5lLJBX5641Ij-QGoTUbPE-Q";
+
+let ably = null;
+let channel = null;
+let pc = null;
+let dataChannel = null;
+let sessionCode = "";
+
+let playlist    = [];
+let currentIdx  = -1;
+let tappoSrc    = "";
+let imgTimer    = null;
+let audioEl     = null;
+let fadeOutDone = false;
+let masterVol   = 1.0;
+let tpScrollTimer = null;
+
+const mediaFiles = {};
+let incomingFile = null;
+
+(function() {
+  const params = new URLSearchParams(window.location.search);
+  const sess = params.get("session");
+  if (sess) {
+    sessionInput.value = sess;
+    setTimeout(() => connect(sess.toUpperCase()), 300);
+  }
+})();
+
+connectBtn.addEventListener("click", () => {
+  const code = sessionInput.value.trim().toUpperCase();
+  if (!code) { alert("Inserisci il codice sessione"); return; }
+  connect(code);
+});
+sessionInput.addEventListener("keydown", e => { if (e.key === "Enter") connectBtn.click(); });
+
+function connect(code) {
+  sessionCode = code;
+  idleCode.textContent = code;
+  setupPanel.style.display = "none";
+  idleStatus.textContent = "Connessione ad Ably...";
+
+  ably = new Ably.Realtime({ key: ABLY_KEY });
+  channel = ably.channels.get("eventplayer-" + code);
+
+  ably.connection.on("connected", () => {
+    console.log("[REMOTO] Ably connesso, canale:", "eventplayer-" + code);
+    idleStatus.textContent = "In attesa della regia...";
+    channel.publish("remote-ready", { ts: Date.now() });
+    console.log("[REMOTO] remote-ready pubblicato");
+  });
+
+  channel.subscribe("offer", async msg => {
+    console.log("[REMOTO] offer ricevuta", msg);
+    await setupPeerConnection();
+    await pc.setRemoteDescription(new RTCSessionDescription(msg.data.sdp));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    channel.publish("answer", { sdp: answer });
+    console.log("[REMOTO] answer pubblicata");
+  });
+
+  channel.subscribe("ice-from-regia", msg => {
+    console.log("[REMOTO] ice-from-regia ricevuto");
+    if (pc && msg.data.candidate) {
+      pc.addIceCandidate(new RTCIceCandidate(msg.data.candidate)).catch(()=>{});
+    }
+  });
+
+  setInterval(() => {
+    if (channel && (!pc || pc.connectionState !== "connected")) {
+      channel.publish("remote-ready", { ts: Date.now() });
+      console.log("[REMOTO] ping remote-ready");
+    }
+  }, 4000);
+}
+
+async function setupPeerConnection() {
+  if (pc) { try { pc.close(); } catch(e){} }
+  pc = new RTCPeerConnection({
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+      { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+      { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
+    ]
+  });
+
+  pc.onicecandidate = e => {
+    if (e.candidate) channel.publish("ice-from-remote", { candidate: e.candidate });
+  };
+
+  pc.ondatachannel = e => {
+    dataChannel = e.channel;
+    dataChannel.binaryType = "arraybuffer";
+    setupDataChannel();
+  };
+
+  pc.onconnectionstatechange = () => {
+    console.log("[REMOTO] connectionState:", pc.connectionState);
+    if (pc.connectionState === "connected") {
+      idleStatus.textContent = "Connesso";
+      idleStatus.classList.add("connected");
+    } else if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
+      idleStatus.textContent = "Disconnesso — riconnessione...";
+      idleStatus.classList.remove("connected");
+    }
+  };
+  pc.oniceconnectionstatechange = () => {
+    console.log("[REMOTO] iceConnectionState:", pc.iceConnectionState);
+  };
+}
+
+function setupDataChannel() {
+  dataChannel.onopen = () => {
+    idleStatus.textContent = "Connesso";
+    idleStatus.classList.add("connected");
+  };
+  dataChannel.onclose = () => {
+    idleStatus.textContent = "Canale chiuso";
+    idleStatus.classList.remove("connected");
+  };
+  dataChannel.onmessage = e => {
+    if (typeof e.data === "string") {
+      handleMessage(JSON.parse(e.data));
+    } else {
+      handleBinaryChunk(e.data);
+    }
+  };
+}
+
+function handleMessage(msg) {
+  switch (msg.cmd) {
+    case "file-start":
+      incomingFile = { id: msg.id, kind: msg.kind, name: msg.name, size: msg.size, mime: msg.mime, chunks: [], received: 0 };
+      xferStatus.style.display = "block";
+      xferStatus.textContent = "Ricevo: " + msg.name;
+      progOverlay.style.display = "block";
+      progFill.style.width = "0%";
+      break;
+    case "file-end":
+      if (incomingFile) {
+        const blob = new Blob(incomingFile.chunks, { type: incomingFile.mime });
+        const url = URL.createObjectURL(blob);
+        if (mediaFiles[incomingFile.id]) URL.revokeObjectURL(mediaFiles[incomingFile.id].url);
+        mediaFiles[incomingFile.id] = { url, kind: incomingFile.kind };
+        incomingFile = null;
+      }
+      xferStatus.style.display = "none";
+      progOverlay.style.display = "none";
+      break;
+    case "updateplaylist":
+      playlist = msg.playlist || [];
+      break;
+    case "play":
+      playIdx(msg.idx);
+      break;
+    case "pause":
+      if (audioEl) { audioEl.paused ? audioEl.play().catch(()=>{}) : audioEl.pause(); }
+      else { v.paused ? v.play().catch(()=>{}) : v.pause(); }
+      break;
+    case "next":
+      onEnded();
+      break;
+    case "setMasterVol":
+      masterVol = msg.vol;
+      if (!v.paused) v.volume = Math.min(1, msg.vol);
+      if (audioEl) audioEl.volume = Math.min(1, msg.vol);
+      break;
+    case "setVol":
+      if (!v.paused) v.volume = Math.min(1, msg.vol);
+      if (audioEl) audioEl.volume = Math.min(1, msg.vol);
+      break;
+    case "blackout":
+      fadeToBlack(200, null);
+      break;
+    case "teleprompter":
+      setupTeleprompter(msg);
+      break;
+    case "teleprompterClear":
+      const tp = document.getElementById("tp-container");
+      if (tp) tp.remove();
+      if (tpScrollTimer) { clearInterval(tpScrollTimer); tpScrollTimer = null; }
+      break;
+    case "stop":
+      hideAll();
+      currentIdx = -1;
+      showTappo();
+      fadeFromBlack(300, null);
+      break;
+    case "seek":
+      if (audioEl && audioEl.duration) audioEl.currentTime = msg.ratio * audioEl.duration;
+      else if (v.duration) v.currentTime = msg.ratio * v.duration;
+      break;
+    case "playlistAudio":
+      if (msg.tappoId !== undefined) tappoSrc = mediaFiles[msg.tappoId] ? mediaFiles[msg.tappoId].url : "";
+      else if (msg.tappo === "") tappoSrc = "";
+      if (currentIdx === -1) {
+        hideAll();
+        showTappo();
+        fadeFromBlack(300, null);
+      }
+      break;
+    case "settappo":
+      tappoSrc = msg.tappoId !== undefined && mediaFiles[msg.tappoId] ? mediaFiles[msg.tappoId].url : "";
+      if (currentIdx === -1) showTappo();
+      else {
+        const cur = playlist[currentIdx];
+        if (cur && cur.kind === "audio") showTappo();
+      }
+      break;
+  }
+}
+
+function handleBinaryChunk(buf) {
+  if (!incomingFile) return;
+  incomingFile.chunks.push(buf);
+  incomingFile.received += buf.byteLength;
+  const pct = incomingFile.size ? (incomingFile.received / incomingFile.size * 100) : 0;
+  progFill.style.width = pct.toFixed(1) + "%";
+}
+
+function hideAll() {
+  v.style.display = "none";
+  v.pause(); v.src = "";
+  v.volume = 1;
+  imgEl.style.display = "none";
+  idle.style.display = "none";
+  if (audioEl) { audioEl.pause(); audioEl = null; }
+  if (imgTimer) { clearTimeout(imgTimer); imgTimer = null; }
+}
+
+function showTappo() {
+  tappoEl.style.display = "none";
+  idle.style.display = "none";
+  if (tappoSrc) {
+    tappoEl.style.backgroundImage = "url(" + tappoSrc + ")";
+    tappoEl.style.display = "block";
+  } else {
+    idle.style.display = "flex";
+  }
+}
+
+function hideTappo() {
+  tappoEl.style.display = "none";
+  idle.style.display = "none";
+}
+
+function setupTeleprompter(data) {
+  const existing = document.getElementById("tp-container");
+  if (existing) existing.remove();
+  if (tpScrollTimer) { clearInterval(tpScrollTimer); tpScrollTimer = null; }
+  if (!data.text) return;
+
+  const div = document.createElement("div");
+  div.id = "tp-container";
+  div.style.cssText = "position:fixed;left:0;right:0;z-index:10;pointer-events:none;";
+
+  if (data.mode === "scroll") {
+    div.style.bottom = "0";
+    div.style.height = "30%";
+    div.style.background = "linear-gradient(transparent, rgba(0,0,0,0.85))";
+    div.style.display = "flex";
+    div.style.alignItems = "flex-end";
+    div.style.overflow = "hidden";
+    const inner = document.createElement("div");
+    inner.style.cssText = "width:100%;padding:1rem 2rem;color:" + data.color + ";font-size:" + data.fontSize + "px;line-height:1.6;font-family:-apple-system,sans-serif;";
+    inner.textContent = data.text;
+    div.appendChild(inner);
+    let pos = inner.offsetHeight;
+    tpScrollTimer = setInterval(() => {
+      pos -= (data.speed / 60);
+      inner.style.transform = "translateY(" + pos + "px)";
+      if (pos < -inner.offsetHeight) pos = window.innerHeight;
+    }, 1000/60);
+  } else {
+    div.style.bottom = "2rem";
+    div.style.padding = "0 3rem";
+    const txt = document.createElement("div");
+    txt.style.cssText = "background:rgba(0,0,0,0.7);color:" + data.color + ";font-size:" + data.fontSize + "px;line-height:1.7;padding:1rem 1.5rem;border-radius:8px;font-family:-apple-system,sans-serif;white-space:pre-wrap;";
+    txt.textContent = data.text;
+    div.appendChild(txt);
+  }
+  document.body.appendChild(div);
+}
+
+function animVol(from, to, ms) {
+  if (v.paused && v.src === "") return;
+  const steps = Math.max(1, Math.floor(ms / 20));
+  const stepMs = ms / steps;
+  const diff = (to - from) / steps;
+  let n = 0;
+  const t = setInterval(() => {
+    n++;
+    v.volume = Math.max(0, Math.min(1, from + diff * n));
+    if (n >= steps) clearInterval(t);
+  }, stepMs);
+}
+
+function fadeToBlack(ms, cb) {
+  fadeEl.style.transition = "none";
+  fadeEl.style.opacity = "0";
+  fadeEl.offsetHeight;
+  if (!ms || ms <= 0) {
+    fadeEl.style.opacity = "1";
+    v.volume = 0;
+    if (cb) cb();
+    return;
+  }
+  fadeEl.style.transition = "opacity " + ms + "ms linear";
+  fadeEl.style.opacity = "1";
+  animVol(1, 0, ms);
+  setTimeout(() => { if (cb) cb(); }, ms + 30);
+}
+
+function fadeFromBlack(ms, cb) {
+  fadeEl.style.transition = "none";
+  fadeEl.style.opacity = "1";
+  fadeEl.offsetHeight;
+  if (!ms || ms <= 0) {
+    fadeEl.style.opacity = "0";
+    if (!v.paused) v.volume = 1;
+    if (cb) cb();
+    return;
+  }
+  fadeEl.style.transition = "opacity " + ms + "ms linear";
+  fadeEl.style.opacity = "0";
+  animVol(0, 1, ms);
+  setTimeout(() => { if (cb) cb(); }, ms + 30);
+}
+
+function onEnded() {
+  const item = playlist[currentIdx];
+  const eMode = item ? (item.endMode || "tappo") : "tappo";
+  fadeOutDone = false;
+
+  if (item && item.auto && currentIdx < playlist.length - 1) {
+    playIdx(currentIdx + 1);
+    return;
+  }
+  if (eMode === "freeze") {
+    fadeFromBlack(200, null);
+    return;
+  }
+  hideAll();
+  showTappo();
+  fadeFromBlack(400, null);
+}
+
+function playIdx(idx) {
+  if (idx < 0 || idx >= playlist.length) return;
+  const item = playlist[idx];
+  const fadeIn = item.fadeIn || 0;
+  const media = mediaFiles[item.fileId];
+
+  if (!media) {
+    setTimeout(() => { if (currentIdx === -1 || playlist[currentIdx] !== item) playIdx(idx); }, 300);
+    return;
+  }
+
+  currentIdx = idx;
+  hideAll();
+  hideTappo();
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch(()=>{});
+  }
+
+  const itemVol = (item.volume !== undefined ? item.volume : 1) * masterVol;
+  if (item.kind === "video") {
+    fadeOutDone = false;
+    v.loop = !!item.loop;
+    v.volume = 0;
+    v.src = media.url;
+    v.style.display = "block";
+    v.play().catch(()=>{});
+    v.onended = onEnded;
+    fadeFromBlack(fadeIn, () => { v.volume = itemVol; });
+  } else if (item.kind === "image") {
+    imgEl.style.backgroundImage = "url(" + media.url + ")";
+    imgEl.style.display = "block";
+    fadeFromBlack(fadeIn, null);
+    if (item.slideshow && item.duration > 0) {
+      imgTimer = setTimeout(() => onEnded(), item.duration * 1000);
+    }
+  } else if (item.kind === "audio") {
+    showTappo();
+    audioEl = new Audio(media.url);
+    audioEl.loop = !!item.loop;
+    audioEl.play().catch(()=>{});
+    audioEl.onended = onEnded;
+    fadeFromBlack(fadeIn, null);
+  }
+}
+
+v.addEventListener("timeupdate", () => {
+  const cur = v.currentTime;
+  const dur = v.duration || 0;
+  if (!fadeOutDone && dur > 0 && currentIdx >= 0) {
+    const item = playlist[currentIdx];
+    const fadeOut = item ? ((item.fadeOut || 0) / 1000) : 0;
+    if (fadeOut > 0 && (dur - cur) <= fadeOut) {
+      fadeOutDone = true;
+      const remaining = Math.max(0, (dur - cur) * 1000);
+      fadeToBlack(remaining, null);
+    }
+  }
+});
+</script>
+</body>
+</html>
