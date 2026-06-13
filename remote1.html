@@ -29,6 +29,7 @@ video{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;display:n
 #progress-overlay{position:fixed;bottom:0;left:0;right:0;height:4px;background:rgba(255,255,255,0.08);z-index:20;display:none;}
 #progress-fill{height:100%;background:rgba(255,255,255,0.25);width:0%;}
 #xfer-status{position:fixed;top:12px;left:12px;background:rgba(0,0,0,0.6);color:rgba(255,255,255,0.6);font-size:11px;padding:6px 12px;border-radius:6px;z-index:30;display:none;letter-spacing:0.04em;}
+#debug-log{position:fixed;bottom:0;left:0;right:0;max-height:40vh;overflow-y:auto;background:rgba(0,0,0,0.85);color:#0f0;font-family:monospace;font-size:10px;padding:8px;z-index:1000;white-space:pre-wrap;line-height:1.4;}
 </style>
 </head>
 <body>
@@ -54,6 +55,26 @@ video{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;display:n
 <video id="v" playsinline></video>
 <div id="progress-overlay"><div id="progress-fill"></div></div>
 <div id="xfer-status"></div>
+<div id="debug-log"></div>
+
+<script>
+const debugLog = document.getElementById("debug-log");
+const origLog = console.log;
+const origErr = console.error;
+const origWarn = console.warn;
+function appendDebug(prefix, args) {
+  const line = document.createElement("div");
+  line.textContent = prefix + Array.from(args).map(a => {
+    try { return typeof a === "object" ? JSON.stringify(a) : String(a); } catch(e) { return String(a); }
+  }).join(" ");
+  debugLog.appendChild(line);
+  debugLog.scrollTop = debugLog.scrollHeight;
+  while (debugLog.children.length > 60) debugLog.removeChild(debugLog.firstChild);
+}
+console.log = function(...args) { appendDebug("", args); origLog.apply(console, args); };
+console.error = function(...args) { appendDebug("ERR: ", args); origErr.apply(console, args); };
+console.warn = function(...args) { appendDebug("WARN: ", args); origWarn.apply(console, args); };
+</script>
 
 <script>
 const v             = document.getElementById("v");
