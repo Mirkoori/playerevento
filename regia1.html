@@ -804,6 +804,11 @@ function setOutputStatus(on) {
     : "Schermo output non aperto — clicca \"Apri schermo output\"";
 }
 
+function sendToOutput(msg) {
+  if (outputWin && !outputWin.closed) outputWin.postMessage(msg, "*");
+  broadcastToRemotes(msg);
+}
+
 function buildPlaylist() {
   return items.map(it => ({
     src:      it.url,
