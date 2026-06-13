@@ -1604,13 +1604,19 @@ async function createOfferForPeer(peerId) {
     console.log("[REGIA] iceConnectionState:", pc.iceConnectionState);
   };
   dc.onopen = () => {
+    console.log("[REGIA] DataChannel aperto, readyState:", dc.readyState);
     peer.state = "connected";
     renderRemoteList();
     sendToRemote(peer, { cmd:"updateplaylist", playlist: buildRemotePlaylist() });
+    console.log("[REGIA] playlist inviata, items da inviare:", items.length, "tappo:", !!tappoDataUrl);
     if (tappoDataUrl) sendFileToRemote(peer, "tappo", tappoDataUrl, "image/png", "tappo");
-    items.forEach(it => sendFileToRemote(peer, it.id, it.url, it.file.type, it.file.name));
+    items.forEach(it => {
+      console.log("[REGIA] avvio invio file:", it.file.name, it.file.type, it.file.size);
+      sendFileToRemote(peer, it.id, it.url, it.file.type, it.file.name);
+    });
   };
-  dc.onclose = () => { peer.state = "disconnected"; renderRemoteList(); };
+  dc.onclose = () => { console.log("[REGIA] DataChannel chiuso"); peer.state = "disconnected"; renderRemoteList(); };
+  dc.onerror = (ev) => { console.error("[REGIA] DataChannel errore:", ev); };
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
@@ -1642,8 +1648,9 @@ function broadcastToRemotes(msgObj) {
 }
 
 async function sendFileToRemote(peer, fileId, blobUrl, mime, name) {
+  console.log("[REGIA] sendFileToRemote chiamata:", fileId, name, "dc.readyState:", peer.dc ? peer.dc.readyState : "no-dc", "gia inviato:", peer.sentFiles.has(fileId));
   if (!blobUrl || peer.sentFiles.has(fileId)) return;
-  if (!peer.dc || peer.dc.readyState !== "open") return;
+  if (!peer.dc || peer.dc.readyState !== "open") { console.warn("[REGIA] DataChannel non pronto, abort invio"); return; }
   peer.sentFiles.add(fileId);
 
   try {
@@ -1651,6 +1658,7 @@ async function sendFileToRemote(peer, fileId, blobUrl, mime, name) {
     const buf  = await resp.arrayBuffer();
     const CHUNK = 64 * 1024;
     const total = buf.byteLength;
+    console.log("[REGIA] file letto, size:", total, "bytes");
 
     sendToRemote(peer, { cmd:"file-start", id: fileId, kind: mimeToKind(mime), name: name, size: total, mime: mime });
 
@@ -1666,8 +1674,10 @@ async function sendFileToRemote(peer, fileId, blobUrl, mime, name) {
       offset += CHUNK;
     }
     sendToRemote(peer, { cmd:"file-end", id: fileId });
+    console.log("[REGIA] invio completato:", name);
     remoteXferEl.textContent = "";
   } catch (e) {
+    console.error("[REGIA] errore invio file:", e);
     peer.sentFiles.delete(fileId);
     remoteXferEl.textContent = "Errore invio file: " + name;
   }
