@@ -160,7 +160,12 @@ async function setupPeerConnection() {
   });
 
   pc.onicecandidate = e => {
-    if (e.candidate) channel.publish("ice-from-remote", { candidate: e.candidate });
+    if (e.candidate) {
+      console.log("[REMOTO] candidato ICE:", e.candidate.type, e.candidate.protocol, e.candidate.address || e.candidate.candidate);
+      channel.publish("ice-from-remote", { candidate: e.candidate });
+    } else {
+      console.log("[REMOTO] fine raccolta candidati ICE");
+    }
   };
 
   pc.ondatachannel = e => {
