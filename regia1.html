@@ -1575,7 +1575,12 @@ async function createOfferForPeer(peerId) {
   remotePeers[peerId] = peer;
 
   pc.onicecandidate = e => {
-    if (e.candidate) remoteChannel.publish("ice-from-regia", { candidate: e.candidate });
+    if (e.candidate) {
+      console.log("[REGIA] candidato ICE:", e.candidate.type, e.candidate.protocol, e.candidate.address || e.candidate.candidate);
+      remoteChannel.publish("ice-from-regia", { candidate: e.candidate });
+    } else {
+      console.log("[REGIA] fine raccolta candidati ICE");
+    }
   };
   pc.onconnectionstatechange = () => {
     console.log("[REGIA] connectionState:", pc.connectionState);
