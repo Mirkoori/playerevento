@@ -173,6 +173,7 @@ async function setupPeerConnection() {
   };
 
   pc.ondatachannel = e => {
+    console.log("[REMOTO] ondatachannel ricevuto");
     dataChannel = e.channel;
     dataChannel.binaryType = "arraybuffer";
     setupDataChannel();
@@ -194,16 +195,21 @@ async function setupPeerConnection() {
 }
 
 function setupDataChannel() {
+  console.log("[REMOTO] setupDataChannel, readyState:", dataChannel.readyState);
   dataChannel.onopen = () => {
+    console.log("[REMOTO] DataChannel aperto");
     idleStatus.textContent = "Connesso";
     idleStatus.classList.add("connected");
   };
   dataChannel.onclose = () => {
+    console.log("[REMOTO] DataChannel chiuso");
     idleStatus.textContent = "Canale chiuso";
     idleStatus.classList.remove("connected");
   };
+  dataChannel.onerror = (ev) => { console.error("[REMOTO] DataChannel errore:", ev); };
   dataChannel.onmessage = e => {
     if (typeof e.data === "string") {
+      console.log("[REMOTO] messaggio ricevuto:", e.data.slice(0, 100));
       handleMessage(JSON.parse(e.data));
     } else {
       handleBinaryChunk(e.data);
